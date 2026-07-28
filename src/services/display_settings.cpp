@@ -16,6 +16,7 @@ constexpr char kKeyFooter[] = "footer";
 constexpr char kKeyWeather[] = "weather";
 constexpr char kKeyFahrenheit[] = "tempF";
 constexpr char kKeyClock24[] = "time24";
+constexpr char kKeyRadarSweep[] = "sweep";
 constexpr char kKeyTextScale[] = "fontPct";
 constexpr char kKeyOtaPassword[] = "otaPass";
 
@@ -24,6 +25,7 @@ bool s_footer_enabled = true;
 bool s_weather_enabled = true;
 bool s_temperature_fahrenheit = false;
 bool s_use_24_hour_clock = true;
+bool s_radar_sweep_enabled = true;
 int s_text_scale_percent = kTextScaleDefaultPercent;
 
 bool checkboxChecked(const char* value) {
@@ -104,6 +106,7 @@ void loadDefaults() {
   s_weather_enabled = true;
   s_temperature_fahrenheit = false;
   s_use_24_hour_clock = true;
+  s_radar_sweep_enabled = true;
   s_text_scale_percent = kTextScaleDefaultPercent;
 }
 
@@ -116,6 +119,7 @@ void persist() {
   prefs.putBool(kKeyWeather, s_weather_enabled);
   prefs.putBool(kKeyFahrenheit, s_temperature_fahrenheit);
   prefs.putBool(kKeyClock24, s_use_24_hour_clock);
+  prefs.putBool(kKeyRadarSweep, s_radar_sweep_enabled);
   prefs.putInt(kKeyTextScale, s_text_scale_percent);
   prefs.putString(kKeyOtaPassword, s_ota_password);
   prefs.end();
@@ -135,6 +139,7 @@ void init() {
   s_weather_enabled = prefs.getBool(kKeyWeather, true);
   s_temperature_fahrenheit = prefs.getBool(kKeyFahrenheit, false);
   s_use_24_hour_clock = prefs.getBool(kKeyClock24, true);
+  s_radar_sweep_enabled = prefs.getBool(kKeyRadarSweep, true);
   s_text_scale_percent = clampTextScalePercent(
       prefs.getInt(kKeyTextScale, kTextScaleDefaultPercent));
 
@@ -155,6 +160,8 @@ bool temperatureFahrenheit() { return s_temperature_fahrenheit; }
 
 bool use24HourClock() { return s_use_24_hour_clock; }
 
+bool radarSweepEnabled() { return s_radar_sweep_enabled; }
+
 int textScalePercent() { return s_text_scale_percent; }
 
 const char* otaPassword() { return s_ota_password; }
@@ -162,12 +169,14 @@ const char* otaPassword() { return s_ota_password; }
 void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* fahrenheit_checkbox,
                     const char* clock24_checkbox,
+                    const char* radar_sweep_checkbox,
                     const char* text_scale_percent_value,
                     const char* ota_password_value) {
   s_footer_enabled = checkboxChecked(footer_checkbox);
   s_weather_enabled = checkboxChecked(weather_checkbox);
   s_temperature_fahrenheit = checkboxChecked(fahrenheit_checkbox);
   s_use_24_hour_clock = checkboxChecked(clock24_checkbox);
+  s_radar_sweep_enabled = checkboxChecked(radar_sweep_checkbox);
   int text_scale_percent = s_text_scale_percent;
   if (parseTextScalePercent(text_scale_percent_value, &text_scale_percent)) {
     s_text_scale_percent = text_scale_percent;
@@ -181,9 +190,10 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
   }
 
   persist();
-  Serial.printf("Display footer: %s, weather: %s, text: %d%%\n",
+  Serial.printf("Display footer: %s, weather: %s, sweep: %s, text: %d%%\n",
                 s_footer_enabled ? "on" : "off",
-                s_weather_enabled ? "on" : "off", s_text_scale_percent);
+                s_weather_enabled ? "on" : "off",
+                s_radar_sweep_enabled ? "on" : "off", s_text_scale_percent);
 }
 
 void clear() {

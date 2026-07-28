@@ -77,6 +77,9 @@ constexpr uint8_t kBgB = 28;
 constexpr uint8_t kGridR = 16;
 constexpr uint8_t kGridG = 100;
 constexpr uint8_t kGridB = 32;
+constexpr uint8_t kSweepR = 80;
+constexpr uint8_t kSweepG = 255;
+constexpr uint8_t kSweepB = 120;
 constexpr uint8_t kAircraftR = 255;
 constexpr uint8_t kAircraftG = 0;
 constexpr uint8_t kAircraftB = 0;
@@ -102,6 +105,7 @@ constexpr uint8_t kFooterBgB = 32;
 
 extern uint16_t kColorBackground;
 extern uint16_t kColorGrid;
+extern uint16_t kColorSweep;
 extern uint16_t kColorLabel;
 extern uint16_t kColorCenter;
 extern uint16_t kColorAircraft;

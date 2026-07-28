@@ -1,10 +1,17 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include <driver/gpio.h>
 
 namespace config {
+
+/** A Wi-Fi network compiled into a local, ignored credentials header. */
+struct WifiCredential {
+  const char* ssid;
+  const char* password;
+};
 
 // --- Wi-Fi portal ---
 constexpr char kPortalApName[] = "PlaneRadar-Setup";
@@ -22,6 +29,10 @@ constexpr unsigned long kWifiConnectingFrameMs = 50;
 constexpr unsigned long kWifiDownGraceMs = 4000;
 /** Minimum interval between background reconnect tries. */
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
+
+// --- Radar sweep animation ---
+constexpr float kRadarSweepRpm = 1.0f;
+constexpr unsigned long kRadarSweepFrameMs = 67;  // ~15 FPS
 
 // --- BOOT button (ESP32-C3 Super Mini, active LOW) ---
 constexpr gpio_num_t kBootPin = GPIO_NUM_9;

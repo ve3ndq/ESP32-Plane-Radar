@@ -22,9 +22,20 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
 | **Hold 3 s** | Factory-reset Wi‑Fi, location, units, display settings, and OTA password; reboot into setup portal |
 
+The web setup page includes **Show radar sweep**, enabled by default. It draws a
+1 RPM sweep line beneath aircraft symbols and labels.
+
 During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
 
 ## Wi‑Fi setup portal
+
+### Optional compiled-in Wi-Fi defaults
+
+For unattended startup, copy `include/wifi_credentials.example.h` to
+`include/wifi_credentials.h` and fill in up to three SSID/password pairs. The
+local credentials file is ignored by Git. On boot the firmware tries those
+networks first, then any Wi-Fi Manager credentials saved on the device; if none
+connect, it starts the `PlaneRadar-Setup` setup AP as usual.
 
 **First-time setup** (no saved Wi‑Fi):
 

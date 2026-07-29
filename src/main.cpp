@@ -64,6 +64,11 @@ void fetchAndDrawAircraft() {
   handleBootButton();
 }
 
+void pollDuringNetwork() {
+  wifiLoop();
+  ui::radarDisplayRefreshSweep();
+}
+
 }  // namespace
 
 void setup() {
@@ -80,8 +85,8 @@ void setup() {
   services::location::init();
   ui::radar::rangeInit();
   services::settings::init();
-  services::adsb::setPollFn(wifiLoop);
-  services::weather::setPollFn(wifiLoop);
+  services::adsb::setPollFn(pollDuringNetwork);
+  services::weather::setPollFn(pollDuringNetwork);
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();
@@ -120,14 +125,18 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
-    } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-      g_last_adsb_fetch_ms = millis();
-      fetchAndDrawAircraft();
-    } else if (services::weather::refreshIfDue(
-                   services::location::lat(), services::location::lon())) {
-      ui::radarDisplayRefreshAircraft();
-    } else if (services::adsb::enrichOnePending()) {
-      ui::radarDisplayRefreshAircraft();
+    } else {
+      // Keep the animation due before potentially slow HTTP work below.
+      ui::radarDisplayRefreshSweep();
+      if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
+        g_last_adsb_fetch_ms = millis();
+        fetchAndDrawAircraft();
+      } else if (services::weather::refreshIfDue(
+                     services::location::lat(), services::location::lon())) {
+        ui::radarDisplayRefreshAircraft();
+      } else if (services::adsb::enrichOnePending()) {
+        ui::radarDisplayRefreshAircraft();
+      }
     }
   }
 

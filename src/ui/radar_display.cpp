@@ -25,6 +25,7 @@ namespace radar {
 
 uint16_t kColorBackground = 0x0000;
 uint16_t kColorGrid = 0x0320;
+uint16_t kColorSweep = 0x07E0;
 uint16_t kColorLabel = 0xFFFF;
 uint16_t kColorCenter = 0xFFFF;
 uint16_t kColorAircraft = 0x001F;
@@ -61,6 +62,8 @@ int s_scale_label_h = 0;
 lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
+unsigned long s_last_sweep_frame_ms = 0;
+bool s_last_sweep_enabled = true;
 
 class DrawScope {
  public:
@@ -204,6 +207,8 @@ void initFooterMetrics() {
 void initPalette() {
   radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
+  radar::kColorSweep =
+      tft.color565(radar::kSweepR, radar::kSweepG, radar::kSweepB);
   radar::kColorLabel = tft.color565(255, 255, 255);
   radar::kColorCenter = tft.color565(255, 255, 255);
   // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
@@ -774,6 +779,24 @@ void drawStaticGrid(Gfx& gfx) {
   gfx.setTextDatum(textdatum_t::top_left);
 }
 
+void drawRadarSweep() {
+  if (!services::settings::radarSweepEnabled()) {
+    return;
+  }
+
+  constexpr float kDegToRad = 0.01745329252f;
+  constexpr float kMsPerMinute = 60000.0f;
+  const float degrees_per_ms = 360.0f * config::kRadarSweepRpm / kMsPerMinute;
+  const float angle_deg = fmodf(millis() * degrees_per_ms, 360.0f);
+  const float angle_rad = angle_deg * kDegToRad;
+  const int ex = radar::kCenterX + static_cast<int>(lroundf(
+      sinf(angle_rad) * static_cast<float>(radar::kGridOuterRadius)));
+  const int ey = radar::kCenterY - static_cast<int>(lroundf(
+      cosf(angle_rad) * static_cast<float>(radar::kGridOuterRadius)));
+  s_draw->drawLine(radar::kCenterX, radar::kCenterY, ex, ey,
+                   radar::kColorSweep);
+}
+
 bool ensureFrameSprite() {
   if (s_frame_ready) {
     return true;
@@ -794,6 +817,7 @@ void renderFrame() {
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
+    drawRadarSweep();
     drawAircraft();
     drawFooter();
   }
@@ -815,6 +839,7 @@ void radarDisplayDraw() {
   // Fallback when the sprite can't be allocated: draw straight to the panel.
   const DrawScope scope(tft);
   drawStaticGrid(tft);
+  drawRadarSweep();
   drawAircraft();
   drawFooter();
   tft.setTextDatum(textdatum_t::top_left);
@@ -829,6 +854,20 @@ void radarDisplayRefreshAircraft() {
   }
 
   radarDisplayDraw();
+}
+
+void radarDisplayRefreshSweep() {
+  const bool enabled = services::settings::radarSweepEnabled();
+  const unsigned long now = millis();
+  if (!enabled && !s_last_sweep_enabled) {
+    return;
+  }
+  if (enabled && now - s_last_sweep_frame_ms < config::kRadarSweepFrameMs) {
+    return;
+  }
+  s_last_sweep_frame_ms = now;
+  s_last_sweep_enabled = enabled;
+  radarDisplayRefreshAircraft();
 }
 
 }  // namespace ui

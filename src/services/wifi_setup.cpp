@@ -14,6 +14,10 @@
 #endif
 
 #include "config.h"
+#if __has_include("wifi_credentials.h")
+#include "wifi_credentials.h"
+#define PLANE_RADAR_HAS_DEFAULT_WIFI_CREDENTIALS 1
+#endif
 #include "services/display_settings.h"
 #include "services/ota_update.h"
 #include "services/radar_location.h"
@@ -111,6 +115,11 @@ WiFiManagerParameter s_param_clock24("clock_24", "Use 24-hour clock", "T", 2,
                                      s_clock24_checkbox_attrs,
                                      WFM_LABEL_AFTER);
 
+char s_radar_sweep_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_radar_sweep(
+    "radar_sweep", "Show radar sweep", "T", 2, s_radar_sweep_checkbox_attrs,
+    WFM_LABEL_AFTER);
+
 WiFiManagerParameter s_param_after_clock_break("<br/>");
 
 constexpr char kTextScaleAttrs[] =
@@ -170,6 +179,10 @@ void refreshPortalParamDefaults() {
                        sizeof(s_clock24_checkbox_attrs),
                        services::settings::use24HourClock());
   s_param_clock24.setValue("T", 2);
+  refreshCheckboxAttrs(s_radar_sweep_checkbox_attrs,
+                       sizeof(s_radar_sweep_checkbox_attrs),
+                       services::settings::radarSweepEnabled());
+  s_param_radar_sweep.setValue("T", 2);
   char text_scale_buf[kTextScaleParamLen + 1];
   snprintf(text_scale_buf, sizeof(text_scale_buf), "%d",
            services::settings::textScalePercent());
@@ -187,6 +200,7 @@ void onPortalParamsSaved() {
   services::settings::saveFromPortal(
       s_param_footer.getValue(), s_param_weather.getValue(),
       s_param_fahrenheit.getValue(), s_param_clock24.getValue(),
+      s_param_radar_sweep.getValue(),
       s_param_text_scale.getValue(),
       s_param_ota_password.getValue());
 }
@@ -200,6 +214,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String weather = web.arg("show_weather");
   const String fahrenheit = web.arg("temp_f");
   const String clock24 = web.arg("clock_24");
+  const String radar_sweep = web.arg("radar_sweep");
   const String text_scale = web.arg("text_scale");
   const String ota_password = web.arg("ota_password");
 
@@ -211,6 +226,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(), clock24.c_str(),
+      radar_sweep.c_str(),
       text_scale.c_str(), ota_password.c_str());
   refreshPortalParamDefaults();
 }
@@ -257,6 +273,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_weather);
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_param_clock24);
+  wm.addParameter(&s_param_radar_sweep);
   wm.addParameter(&s_param_after_clock_break);
   wm.addParameter(&s_param_text_scale);
   wm.addParameter(&s_param_text_scale_output);
@@ -479,6 +496,25 @@ bool connectSavedNetwork(bool show_ui) {
   return tryConnectWithUi(ssid, pass, show_ui);
 }
 
+bool connectDefaultNetwork(bool show_ui) {
+#ifdef PLANE_RADAR_HAS_DEFAULT_WIFI_CREDENTIALS
+  for (size_t i = 0; i < config::kDefaultWifiCredentialCount; ++i) {
+    const config::WifiCredential& credential = config::kDefaultWifiCredentials[i];
+    if (credential.ssid == nullptr || credential.ssid[0] == '\0') {
+      continue;
+    }
+
+    Serial.printf("Trying default WiFi %u/%u: %s\n", static_cast<unsigned>(i + 1),
+                  static_cast<unsigned>(config::kDefaultWifiCredentialCount),
+                  credential.ssid);
+    if (tryConnectWithUi(credential.ssid, credential.password, show_ui)) {
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
 bool openConfigPortal() {
   stopLanWebPortal();
   WiFi.disconnect(true);
@@ -562,7 +598,7 @@ void wifiResetCredentialsAndReboot() {
 bool wifiReconnect() {
   initBootButton();
   Serial.println("WiFi reconnecting...");
-  return connectSavedNetwork(true);
+  return connectDefaultNetwork(true) || connectSavedNetwork(true);
 }
 
 void wifiLoop() {
@@ -615,7 +651,8 @@ bool wifiSetupConnect() {
     return true;
   }
 
-  if (storedWifiCredentials() && connectSavedNetwork(true)) {
+  if (connectDefaultNetwork(true) ||
+      (storedWifiCredentials() && connectSavedNetwork(true))) {
     WiFi.setAutoReconnect(true);
     Serial.printf("Connected: %s  IP %s\n", WiFi.SSID().c_str(),
                   WiFi.localIP().toString().c_str());
@@ -623,9 +660,9 @@ bool wifiSetupConnect() {
   }
 
   if (storedWifiCredentials()) {
-    Serial.println("Saved WiFi could not connect — opening setup portal");
+    Serial.println("Default and saved WiFi could not connect — opening setup portal");
   } else {
-    Serial.println("No saved WiFi — opening setup portal");
+    Serial.println("No available default WiFi — opening setup portal");
   }
 
   if (openConfigPortal() && wifiLinkUp()) {

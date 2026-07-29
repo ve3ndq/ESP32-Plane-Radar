@@ -16,6 +16,7 @@ bool footerEnabled();
 bool weatherEnabled();
 bool temperatureFahrenheit();
 bool use24HourClock();
+bool radarSweepEnabled();
 int textScalePercent();
 const char* otaPassword();
 
@@ -26,6 +27,7 @@ const char* otaPassword();
 void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* fahrenheit_checkbox,
                     const char* clock24_checkbox,
+                    const char* radar_sweep_checkbox,
                     const char* text_scale_percent_value,
                     const char* ota_password_value);
 

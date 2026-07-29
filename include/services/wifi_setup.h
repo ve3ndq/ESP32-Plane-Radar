@@ -3,9 +3,9 @@
 /** True when the next boot should show the setup screen first (after credential reset). */
 bool wifiShowsSetupScreenOnBoot();
 void wifiResetCredentialsAndReboot();
-/** Boot flow: connect with UI, open portal only if saved creds fail. */
+/** Boot flow: try local defaults and saved credentials, then open setup AP. */
 bool wifiSetupConnect();
-/** Reconnect using saved creds; never opens the captive portal. */
+/** Reconnect using local defaults and saved credentials; never opens the captive portal. */
 bool wifiReconnect();
 /** Keeps the LAN config portal alive; call every loop() iteration. */
 void wifiLoop();

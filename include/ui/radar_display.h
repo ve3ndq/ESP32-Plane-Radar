@@ -8,4 +8,7 @@ void radarDisplayDraw();
 /** Redraw aircraft only (blits cached grid; no full-screen clear). */
 void radarDisplayRefreshAircraft();
 
+/** Advance the radar sweep animation when its next frame is due. */
+void radarDisplayRefreshSweep();
+
 }  // namespace ui

@@ -4,11 +4,8 @@
 
 namespace services::weather {
 
-using PollFn = void (*)();
-
 /** Start UTC NTP synchronization. Safe to call after every reconnect. */
 void begin();
-void setPollFn(PollFn fn);
 
 /**
  * Refresh current conditions and the location's UTC offset when due.

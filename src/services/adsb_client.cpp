@@ -4,6 +4,8 @@
 #include <WiFiClientSecure.h>
 
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include <cctype>
 #include <cfloat>
@@ -17,13 +19,15 @@ namespace {
 
 constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
-constexpr int kConnectAttemptMs = 200;
+constexpr int kConnectTimeoutMs = 3000;
 constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
 constexpr size_t kEnrichmentCacheSize = 48;
 
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
-PollFn s_poll_fn = nullptr;
+StaticSemaphore_t s_aircraft_mutex_storage;
+SemaphoreHandle_t s_aircraft_mutex =
+    xSemaphoreCreateMutexStatic(&s_aircraft_mutex_storage);
 unsigned long s_last_enrichment_lookup_ms = 0;
 unsigned long s_last_enrichment_failure_ms = 0;
 double s_last_center_lat = 0.0;
@@ -40,32 +44,13 @@ struct EnrichmentCacheEntry {
 
 EnrichmentCacheEntry s_enrichment_cache[kEnrichmentCacheSize];
 
-void pollNetwork() {
-  if (s_poll_fn != nullptr) {
-    s_poll_fn();
-  }
+int performGet(HTTPClient& http) {
+  http.setConnectTimeout(kConnectTimeoutMs);
+  return http.GET();
 }
 
-int performGetWithPoll(HTTPClient& http, unsigned long timeout_ms) {
-  http.setConnectTimeout(kConnectAttemptMs);
-  const unsigned long started_ms = millis();
-  while (millis() - started_ms < timeout_ms) {
-    pollNetwork();
-    const int code = http.GET();
-    if (code > 0) {
-      return code;
-    }
-    if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
-        code != HTTPC_ERROR_NOT_CONNECTED) {
-      return code;
-    }
-    delay(5);
-  }
-  return HTTPC_ERROR_READ_TIMEOUT;
-}
-
-bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
-                              unsigned long timeout_ms) {
+bool readResponseBody(HTTPClient& http, String& payload,
+                      unsigned long timeout_ms) {
   WiFiClient* stream = http.getStreamPtr();
   if (stream == nullptr) {
     return false;
@@ -79,7 +64,6 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
   uint8_t buffer[512];
   const unsigned long started_ms = millis();
   while (millis() - started_ms < timeout_ms) {
-    pollNetwork();
     const int available = stream->available();
     if (available > 0) {
       const int to_read =
@@ -442,11 +426,11 @@ bool fetchFlightDataJson(const String& url, const char* callsign,
     return false;
   }
   http.setTimeout(config::kFlightLookupTimeoutMs);
-  const int code = performGetWithPoll(http, config::kFlightLookupTimeoutMs);
+  const int code = performGet(http);
 
   String payload;
   if (code == HTTP_CODE_OK) {
-    readResponseBodyWithPoll(http, payload, config::kFlightLookupTimeoutMs);
+    readResponseBody(http, payload, config::kFlightLookupTimeoutMs);
   }
   http.end();
 
@@ -522,15 +506,19 @@ void applyCachedEnrichment(Aircraft* plane) {
 
 }  // namespace
 
-void setPollFn(PollFn fn) { s_poll_fn = fn; }
+const Aircraft* lockAircraft(size_t* count) {
+  xSemaphoreTake(s_aircraft_mutex, portMAX_DELAY);
+  if (count != nullptr) {
+    *count = s_aircraft_count;
+  }
+  return s_aircraft;
+}
 
-size_t aircraftCount() { return s_aircraft_count; }
-
-const Aircraft* aircraftList() { return s_aircraft; }
+void unlockAircraft() {
+  xSemaphoreGive(s_aircraft_mutex);
+}
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
-  s_last_center_lat = center_lat;
-  s_last_center_lon = center_lon;
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;
@@ -550,7 +538,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   http.setTimeout(kAdsbRequestTimeoutMs);
-  const int code = performGetWithPoll(http, kAdsbRequestTimeoutMs);
+  const int code = performGet(http);
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
@@ -558,7 +546,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   String payload;
-  if (!readResponseBodyWithPoll(http, payload, kAdsbRequestTimeoutMs)) {
+  if (!readResponseBody(http, payload, kAdsbRequestTimeoutMs)) {
     Serial.println("adsb: empty response");
     http.end();
     return false;
@@ -574,10 +562,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (ac.isNull()) {
+    xSemaphoreTake(s_aircraft_mutex, portMAX_DELAY);
     s_aircraft_count = 0;
+    xSemaphoreGive(s_aircraft_mutex);
     return true;
   }
 
+  xSemaphoreTake(s_aircraft_mutex, portMAX_DELAY);
   size_t n = 0;
   for (JsonObject plane : ac) {
     if (n >= kMaxAircraft) {
@@ -601,14 +592,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   s_aircraft_count = n;
+  xSemaphoreGive(s_aircraft_mutex);
+  s_last_center_lat = center_lat;
+  s_last_center_lon = center_lon;
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
 }
 
 bool enrichOnePending() {
   const unsigned long now = millis();
-  if (s_aircraft_count == 0 ||
-      (s_last_enrichment_failure_ms != 0 &&
+  if ((s_last_enrichment_failure_ms != 0 &&
        now - s_last_enrichment_failure_ms <
            config::kFlightLookupFailureBackoffMs) ||
       (s_last_enrichment_lookup_ms != 0 &&
@@ -619,32 +612,34 @@ bool enrichOnePending() {
 
   size_t candidate_index = kMaxAircraft;
   float candidate_dist_sq = FLT_MAX;
+  Aircraft plane = {};
+  xSemaphoreTake(s_aircraft_mutex, portMAX_DELAY);
   for (size_t index = 0; index < s_aircraft_count; ++index) {
-    Aircraft& plane = s_aircraft[index];
-    if (plane.hex[0] == '\0' && plane.callsign[0] == '\0') {
+    Aircraft& candidate = s_aircraft[index];
+    if (candidate.hex[0] == '\0' && candidate.callsign[0] == '\0') {
       continue;
     }
 
-    EnrichmentCacheEntry* cached = findCacheEntry(plane, now);
+    EnrichmentCacheEntry* cached = findCacheEntry(candidate, now);
     if (cached != nullptr) {
-      applyCacheEntry(&plane, *cached);
       continue;
     }
 
-    const float dlat = plane.lat - static_cast<float>(s_last_center_lat);
-    const float dlon = plane.lon - static_cast<float>(s_last_center_lon);
+    const float dlat = candidate.lat - static_cast<float>(s_last_center_lat);
+    const float dlon = candidate.lon - static_cast<float>(s_last_center_lon);
     const float dist_sq = dlat * dlat + dlon * dlon;
     if (dist_sq < candidate_dist_sq) {
       candidate_index = index;
       candidate_dist_sq = dist_sq;
+      plane = candidate;
     }
   }
+  xSemaphoreGive(s_aircraft_mutex);
 
   if (candidate_index == kMaxAircraft) {
     return false;
   }
 
-  Aircraft& plane = s_aircraft[candidate_index];
   s_last_enrichment_lookup_ms = now;
   EnrichmentCacheEntry* entry = cacheSlotFor(plane, now);
   *entry = {};
@@ -661,7 +656,16 @@ bool enrichOnePending() {
   s_last_enrichment_failure_ms = 0;
   entry->refreshed_ms = millis();
   entry->has_data = entry->route[0] != '\0' || entry->type[0] != '\0';
-  const bool changed = applyCacheEntry(&plane, *entry);
+  bool changed = false;
+  xSemaphoreTake(s_aircraft_mutex, portMAX_DELAY);
+  for (size_t index = 0; index < s_aircraft_count; ++index) {
+    if (strcmp(s_aircraft[index].hex, plane.hex) == 0 &&
+        strcmp(s_aircraft[index].callsign, plane.callsign) == 0) {
+      changed = applyCacheEntry(&s_aircraft[index], *entry);
+      break;
+    }
+  }
+  xSemaphoreGive(s_aircraft_mutex);
   Serial.printf("flight data: %s %s %s\n", plane.callsign,
                 entry->route[0] != '\0' ? entry->route : "(route unknown)",
                 entry->type[0] != '\0' ? entry->type : "(type unchanged)");

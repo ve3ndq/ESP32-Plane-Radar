@@ -130,6 +130,10 @@ footer text defaults to 110% and can be adjusted from 80–130% in the same page
 
 The device sends the configured coordinates to adsb.fi and Open-Meteo, and sends active callsign/Mode-S identifiers to ADSBDB.
 
+HTTPS fetches run in a background FreeRTOS task so TLS and response waits do
+not stop display animation. The serial log reports network-request durations
+and, every ten seconds, the maximum sweep frame gap and render time.
+
 ## Configuration
 
 Edit **`include/config.h`** for hardware and behavior:
@@ -144,6 +148,7 @@ Edit **`include/config.h`** for hardware and behavior:
 | ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
 | Flight enrichment | lookup interval, timeout, and cache durations |
 | Weather | endpoint, request timeout, and refresh interval |
+| Background work | network task stack/idle timing and diagnostics interval |
 | Defaults | initial OTA credentials |
 
 Range presets: `include/ui/radar_range.h` (`kRangePresets`).

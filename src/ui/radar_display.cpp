@@ -64,6 +64,19 @@ LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
 unsigned long s_last_sweep_frame_ms = 0;
 bool s_last_sweep_enabled = true;
+unsigned long s_sweep_report_started_ms = 0;
+unsigned long s_sweep_max_gap_ms = 0;
+unsigned long s_sweep_max_render_ms = 0;
+unsigned long s_sweep_frame_count = 0;
+
+struct SavedSweepPixel {
+  int16_t x;
+  int16_t y;
+  uint32_t color;
+};
+
+SavedSweepPixel s_saved_sweep_pixels[radar::kGridOuterRadius + 1];
+uint32_t s_background_pixel_value = 0;
 
 class DrawScope {
  public:
@@ -604,8 +617,9 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
 void drawAircraft() {
   initLabelMetrics();
 
-  const size_t n = services::adsb::aircraftCount();
-  const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+  size_t n = 0;
+  const services::adsb::Aircraft* planes =
+      services::adsb::lockAircraft(&n);
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
@@ -660,6 +674,7 @@ void drawAircraft() {
     const size_t i = items[d].index;
     drawAircraftTag(items[d].x, items[d].y, planes[i]);
   }
+  services::adsb::unlockAircraft();
 }
 
 void applyCardinalStyle() {
@@ -801,7 +816,9 @@ bool ensureFrameSprite() {
   if (s_frame_ready) {
     return true;
   }
-  s_frame.setColorDepth(16);
+  // RGB332 is ample for the radar palette and preserves roughly 58 KB of heap
+  // for TLS/JSON while still allowing a full flicker-free frame buffer.
+  s_frame.setColorDepth(8);
   if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
     Serial.println("radar: frame sprite alloc failed");
     return false;
@@ -810,19 +827,89 @@ bool ensureFrameSprite() {
   return true;
 }
 
-// Double-buffered frame: composite the grid AND aircraft into the off-screen
-// sprite, then blit it to the panel in a single pushSprite. Because the panel
-// is updated in one pass, labels never show an erase/redraw gap — no flicker.
-void renderFrame() {
+void rebuildBaseFrame() {
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
-    drawRadarSweep();
     drawAircraft();
     drawFooter();
   }
+  s_background_pixel_value = s_frame.readPixelValue(0, 0);
+}
+
+size_t drawSweepSavingBackground() {
+  if (!services::settings::radarSweepEnabled()) {
+    return 0;
+  }
+
+  constexpr float kDegToRad = 0.01745329252f;
+  constexpr float kMsPerMinute = 60000.0f;
+  const float degrees_per_ms = 360.0f * config::kRadarSweepRpm / kMsPerMinute;
+  const float angle_rad =
+      fmodf(millis() * degrees_per_ms, 360.0f) * kDegToRad;
+  const int target_x = radar::kCenterX + static_cast<int>(lroundf(
+      sinf(angle_rad) * static_cast<float>(radar::kGridOuterRadius)));
+  const int target_y = radar::kCenterY - static_cast<int>(lroundf(
+      cosf(angle_rad) * static_cast<float>(radar::kGridOuterRadius)));
+
+  int x = radar::kCenterX;
+  int y = radar::kCenterY;
+  const int dx = std::abs(target_x - x);
+  const int sx = x < target_x ? 1 : -1;
+  const int dy = -std::abs(target_y - y);
+  const int sy = y < target_y ? 1 : -1;
+  int error = dx + dy;
+  size_t count = 0;
+  size_t steps = 0;
+
+  while (steps < sizeof(s_saved_sweep_pixels) /
+                     sizeof(s_saved_sweep_pixels[0])) {
+    // Draw only into true background pixels. Grid, runway, aircraft, label,
+    // and footer pixels therefore remain above the sweep without needing an
+    // expensive foreground redraw on every animation frame.
+    if (s_frame.readPixelValue(x, y) == s_background_pixel_value) {
+      s_saved_sweep_pixels[count] = {
+          static_cast<int16_t>(x),
+          static_cast<int16_t>(y),
+          s_frame.readPixel(x, y),
+      };
+      s_frame.drawPixel(x, y, radar::kColorSweep);
+      ++count;
+    }
+    ++steps;
+    if (x == target_x && y == target_y) {
+      break;
+    }
+    const int error2 = error * 2;
+    if (error2 >= dy) {
+      error += dy;
+      x += sx;
+    }
+    if (error2 <= dx) {
+      error += dx;
+      y += sy;
+    }
+  }
+  return count;
+}
+
+void presentBaseFrame() {
+  size_t saved_pixel_count = 0;
+  {
+    const DrawScope scope(s_frame);
+    saved_pixel_count = drawSweepSavingBackground();
+  }
   s_frame.pushSprite(0, 0);
+  for (size_t i = 0; i < saved_pixel_count; ++i) {
+    const SavedSweepPixel& pixel = s_saved_sweep_pixels[i];
+    s_frame.drawPixel(pixel.x, pixel.y, pixel.color);
+  }
   tft.setTextDatum(textdatum_t::top_left);
+}
+
+void renderFrame() {
+  rebuildBaseFrame();
+  presentBaseFrame();
 }
 
 }  // namespace
@@ -865,9 +952,38 @@ void radarDisplayRefreshSweep() {
   if (enabled && now - s_last_sweep_frame_ms < config::kRadarSweepFrameMs) {
     return;
   }
+  if (enabled && s_last_sweep_frame_ms != 0) {
+    const unsigned long gap_ms = now - s_last_sweep_frame_ms;
+    if (gap_ms > s_sweep_max_gap_ms) {
+      s_sweep_max_gap_ms = gap_ms;
+    }
+  }
   s_last_sweep_frame_ms = now;
   s_last_sweep_enabled = enabled;
-  radarDisplayRefreshAircraft();
+  const unsigned long render_started_ms = millis();
+  if (ensureFrameSprite()) {
+    presentBaseFrame();
+  } else {
+    radarDisplayDraw();
+  }
+  const unsigned long render_ms = millis() - render_started_ms;
+  if (render_ms > s_sweep_max_render_ms) {
+    s_sweep_max_render_ms = render_ms;
+  }
+  ++s_sweep_frame_count;
+
+  if (s_sweep_report_started_ms == 0) {
+    s_sweep_report_started_ms = now;
+  } else if (now - s_sweep_report_started_ms >=
+             config::kTimingReportIntervalMs) {
+    Serial.printf("timing: sweep %lu frames, max gap %lu ms, max render %lu ms\n",
+                  s_sweep_frame_count, s_sweep_max_gap_ms,
+                  s_sweep_max_render_ms);
+    s_sweep_report_started_ms = now;
+    s_sweep_max_gap_ms = 0;
+    s_sweep_max_render_ms = 0;
+    s_sweep_frame_count = 0;
+  }
 }
 
 }  // namespace ui

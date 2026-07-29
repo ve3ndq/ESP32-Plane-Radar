@@ -33,6 +33,9 @@ constexpr unsigned long kWifiReconnectIntervalMs = 15000;
 // --- Radar sweep animation ---
 constexpr float kRadarSweepRpm = 1.0f;
 constexpr unsigned long kRadarSweepFrameMs = 67;  // ~15 FPS
+constexpr unsigned long kTimingReportIntervalMs = 10000;
+constexpr uint32_t kNetworkTaskStackBytes = 8192;
+constexpr unsigned long kNetworkTaskIdleMs = 20;
 
 // --- BOOT button (ESP32-C3 Super Mini, active LOW) ---
 constexpr gpio_num_t kBootPin = GPIO_NUM_9;

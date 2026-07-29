@@ -20,6 +20,7 @@ constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
 
 bool s_started = false;
 bool s_valid = false;
+portMUX_TYPE s_weather_mux = portMUX_INITIALIZER_UNLOCKED;
 float s_temperature_c = 0.0f;
 int s_humidity_percent = 0;
 int s_weather_code = -1;
@@ -27,15 +28,8 @@ int32_t s_utc_offset_seconds = 0;
 unsigned long s_last_attempt_ms = 0;
 double s_last_latitude = 999.0;
 double s_last_longitude = 999.0;
-PollFn s_poll_fn = nullptr;
 
 bool clockValid() { return time(nullptr) >= kMinimumValidEpoch; }
-
-void pollNetwork() {
-  if (s_poll_fn != nullptr) {
-    s_poll_fn();
-  }
-}
 
 const char* conditionLabel(int code) {
   if (code == 0) return "CLEAR";
@@ -114,9 +108,7 @@ bool fetch(double latitude, double longitude) {
   http.setConnectTimeout(config::kWeatherRequestTimeoutMs);
   http.setTimeout(config::kWeatherRequestTimeoutMs);
 
-  pollNetwork();
   const int code = http.GET();
-  pollNetwork();
   if (code != HTTP_CODE_OK) {
     Serial.printf("weather: HTTP %d\n", code);
     http.end();
@@ -125,7 +117,6 @@ bool fetch(double latitude, double longitude) {
 
   const String payload = http.getString();
   http.end();
-  pollNetwork();
 
   JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, payload);
@@ -142,15 +133,21 @@ bool fetch(double latitude, double longitude) {
     return false;
   }
 
-  s_temperature_c = current["temperature_2m"].as<float>();
-  s_humidity_percent = current["relative_humidity_2m"].as<int>();
-  s_weather_code = current["weather_code"].as<int>();
-  s_utc_offset_seconds = doc["utc_offset_seconds"] | 0;
-  seedClockFromApiTime(current["time"] | nullptr, s_utc_offset_seconds);
+  const float temperature_c = current["temperature_2m"].as<float>();
+  const int humidity_percent = current["relative_humidity_2m"].as<int>();
+  const int weather_code = current["weather_code"].as<int>();
+  const int32_t utc_offset_seconds = doc["utc_offset_seconds"] | 0;
+  seedClockFromApiTime(current["time"] | nullptr, utc_offset_seconds);
+  portENTER_CRITICAL(&s_weather_mux);
+  s_temperature_c = temperature_c;
+  s_humidity_percent = humidity_percent;
+  s_weather_code = weather_code;
+  s_utc_offset_seconds = utc_offset_seconds;
   s_valid = true;
-  Serial.printf("weather: %.1f C, %d%%, code %d, UTC%+ld\n", s_temperature_c,
-                s_humidity_percent, s_weather_code,
-                static_cast<long>(s_utc_offset_seconds));
+  portEXIT_CRITICAL(&s_weather_mux);
+  Serial.printf("weather: %.1f C, %d%%, code %d, UTC%+ld\n", temperature_c,
+                humidity_percent, weather_code,
+                static_cast<long>(utc_offset_seconds));
   return true;
 }
 
@@ -162,8 +159,6 @@ void begin() {
     s_started = true;
   }
 }
-
-void setPollFn(PollFn fn) { s_poll_fn = fn; }
 
 bool refreshIfDue(double latitude, double longitude, bool force) {
   begin();
@@ -181,25 +176,35 @@ bool refreshIfDue(double latitude, double longitude, bool force) {
   return fetch(latitude, longitude);
 }
 
-bool valid() { return s_valid; }
+bool valid() {
+  portENTER_CRITICAL(&s_weather_mux);
+  const bool value = s_valid;
+  portEXIT_CRITICAL(&s_weather_mux);
+  return value;
+}
 
 void formatWeatherLine(char* out, size_t out_len) {
   if (out_len == 0) {
     return;
   }
-  if (!s_valid) {
+  portENTER_CRITICAL(&s_weather_mux);
+  const bool valid_snapshot = s_valid;
+  float temperature = s_temperature_c;
+  const int humidity_percent = s_humidity_percent;
+  const int weather_code = s_weather_code;
+  portEXIT_CRITICAL(&s_weather_mux);
+  if (!valid_snapshot) {
     snprintf(out, out_len, "WEATHER --");
     return;
   }
 
-  float temperature = s_temperature_c;
   const char unit =
       settings::temperatureFahrenheit() ? 'F' : 'C';
   if (settings::temperatureFahrenheit()) {
     temperature = temperature * 9.0f / 5.0f + 32.0f;
   }
-  snprintf(out, out_len, "%s %.0f%c RH%d%%", conditionLabel(s_weather_code),
-           lroundf(temperature), unit, s_humidity_percent);
+  snprintf(out, out_len, "%s %.0f%c RH%d%%", conditionLabel(weather_code),
+           lroundf(temperature), unit, humidity_percent);
 }
 
 void formatDateTimeLine(char* out, size_t out_len) {
@@ -213,7 +218,10 @@ void formatDateTimeLine(char* out, size_t out_len) {
     return;
   }
 
-  const time_t local_now = utc_now + s_utc_offset_seconds;
+  portENTER_CRITICAL(&s_weather_mux);
+  const int32_t utc_offset_seconds = s_utc_offset_seconds;
+  portEXIT_CRITICAL(&s_weather_mux);
+  const time_t local_now = utc_now + utc_offset_seconds;
   tm local = {};
   gmtime_r(&local_now, &local);
   constexpr const char* kMonths[] = {"JAN", "FEB", "MAR", "APR",
